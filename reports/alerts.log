@@ -1,0 +1,9 @@
+[2025-06-15 15:32:01] [HIGH] [Maintenance] Haute vibration détectée sur le moteur M-001.
+[2025-06-15 15:32:01] [MEDIUM] [Qualité] pH produit hors spécifications pour le lot L-ABC.
+[2025-06-15 21:50:20] [HIGH] [Maintenance] Haute vibration détectée sur le moteur M-001.
+[2025-06-15 21:50:20] [MEDIUM] [Qualité] pH produit hors spécifications pour le lot L-ABC.
+[2025-06-15 23:19:18] [HIGH] [Maintenance] Haute vibration détectée sur le moteur M-001.
+[2025-06-15 23:19:18] [MEDIUM] [Qualité] pH produit hors spécifications pour le lot L-ABC.
+[2025-06-16 00:10:40] [HIGH] [Maintenance] Haute vibration détectée sur le moteur M-001.
+[2025-06-16 00:10:40] [MEDIUM] [Qualité] pH produit hors spécifications pour le lot L-ABC.
+[2025-06-16 01:06:57] [WARNING] [Dérive du Modole] D�rive détectée sur 'vibration_motor': écart de 49.87% de la moyenne.

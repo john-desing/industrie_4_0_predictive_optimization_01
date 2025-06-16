@@ -1,0 +1,11 @@
+apiVersion: 1
+datasources:
+  - name: PredictiveMaintenanceDB
+    type: sqlite
+    access: proxy
+    isDefault: true
+    # Chemin d'accès au fichier DB À L'INTÉRIEUR DU CONTENEUR Grafana
+    # Assurez-vous que ce fichier est monté via un volume dans docker-compose.yml
+    url: /var/lib/grafana/data/predictive_maintenance.db # Exemple si vous le montez là
+    version: 1
+    readOnly: true

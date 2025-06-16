@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+data/*.csv # Ne pas versionner les anciens CSV si on utilise la DB
+data/*.db # Ajouter la base de données SQLite pour l'ignorer
+models/*.pkl
+mlruns/

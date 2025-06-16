@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # Service MLflow Tracking Server
+  mlflow_server:
+    build:
+      context: .
+      dockerfile: Dockerfile_mlflow # Un Dockerfile dédié pour MLflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlruns # Persister les données de tracking et modèles
+      - ./models:/app/models # Assurez-vous que le dossier models est accessible
+      - ./data:/app/data # Assurez-vous que le dossier data est accessible (pour la DB)
+    environment:
+      # Configure MLflow pour utiliser un backend de fichiers persisté
+      - MLFLOW_TRACKING_URI=file:///mlruns
+      - MLFLOW_TRACKING_SERVER_HOST=0.0.0.0 # Exposer le serveur sur toutes les interfaces
+    command: mlflow ui --host 0.0.0.0 --port 5000 --backend-store-uri file:///mlruns
+
+  # Service de l'application Streamlit
+  streamlit_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data # Pour accéder à la base de données SQLite
+      - ./models:/app/models # Pour charger le scaler et le modèle localement (si pas via MLflow pyfunc)
+      - ./src:/app/src # Pour que l'application puisse importer nos modules
+      - ./mlruns:/app/mlruns # Si Streamlit doit interagir directement avec les logs MLflow
+    depends_on:
+      - mlflow_server # S'assure que MLflow est démarré avant Streamlit
+    # Assurez-vous que Streamlit est configuré pour accéder à la DB et potentiellement MLflow
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow_server:5000 # Pour que les scripts Python à l'intérieur du conteneur se connectent à MLflow
+    version: '3.8'
+
+  # service Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000" # Accès à l'interface de Grafana depuis votre machine (http://localhost:3000)
+    volumes:
+      - grafana_data:/var/lib/grafana # Pour persister les données de Grafana (dashboards, utilisateurs, etc.)
+      - ./grafana/provisioning:/etc/grafana/provisioning # Pour le provisioning automatique des sources de données et tableaux de bord
+      # Si votre DB SQLite est un fichier dans votre dossier de projet, vous devrez le monter ici aussi
+      # - ./data/your_database.db:/path/in/grafana/to/your_database.db # Exemple si vous avez un fichier DB
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin # Nom d'utilisateur admin par défaut
+      - GF_SECURITY_ADMIN_PASSWORD=admin # Mot de passe admin par défaut (À CHANGER EN PRODUCTION !)
+      - GF_USERS_ALLOW_SIGN_UP=false # Désactiver l'inscription d'utilisateurs par défaut
+    depends_on:
+      # Grafana dépend de la base de données qui contient les données des capteurs et prédictions
+      # Si vous utilisez une DB séparée (ex: Postgres), ajoutez-la ici
+      # Si c'est le même conteneur que votre backend MLflow (moins courant), assurez-vous qu'il soit démarré
+      - mlflow_server # Mettons-le comme dépendance pour s'assurer que le système est stable
+    restart: unless-stopped # Redémarre toujours sauf si arrêté manuellement
+
+# Ajout d'un volume nommé pour la persistance des données de Grafana
+volumes:
+  grafana_data:

@@ -1,0 +1,16 @@
+FROM python:3.9-slim-buster
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir mlflow==2.10.1 # Utilisez une version spécifique de MLflow
+
+# Créer des dossiers pour la persistance si nécessaire
+RUN mkdir -p /mlruns
+RUN mkdir -p /app/models
+RUN mkdir -p /app/data
+
+# Expose le port par défaut de MLflow
+EXPOSE 5000
+
+# La commande est définie dans docker-compose.yml
+CMD ["mlflow", "ui", "--host", "0.0.0.0", "--port", "5000", "--backend-store-uri", "file:///mlruns"]

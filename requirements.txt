@@ -6,3 +6,4 @@ matplotlib
 seaborn
 mlflow==2.10.1
 streamlit
+plotly

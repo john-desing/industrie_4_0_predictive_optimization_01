@@ -1,0 +1,11 @@
+.git
+.github
+.terraform
+venv
+__pycache__
+*.py[cod]
+.ipynb_checkpoints
+mlruns
+data/*.db
+reports
+notebooks

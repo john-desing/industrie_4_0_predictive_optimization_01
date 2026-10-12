@@ -1,0 +1,79 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION || 'europe-west1' }}
+  REPOSITORY: ${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY || 'industrie-4-0' }}
+  CLUSTER: ${{ vars.GKE_CLUSTER_NAME || 'industrie-4-0' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        if: github.event_name == 'push'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Google Cloud SDK
+        if: github.event_name == 'push'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          install_components: gke-gcloud-auth-plugin
+
+      - name: Configure Docker for Artifact Registry
+        if: github.event_name == 'push'
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate Python syntax
+        run: python -m compileall -q app.py src
+
+      - name: Build Streamlit image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/industrie-4-0-app:${{ github.sha }}
+
+      - name: Build MLflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile_mlflow
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/industrie-4-0-mlflow:${{ github.sha }}
+
+      - name: Deploy to GKE
+        if: github.event_name == 'push'
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER" \
+            --region "$REGION" \
+            --project "$PROJECT_ID"
+          kubectl apply -f k8s/
+          kubectl set image deployment/streamlit-app \
+            streamlit-app="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/industrie-4-0-app:${GITHUB_SHA}" \
+            --namespace industrie-4-0
+          kubectl set image deployment/mlflow \
+            mlflow="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/industrie-4-0-mlflow:${GITHUB_SHA}" \
+            --namespace industrie-4-0
+          kubectl rollout status deployment/streamlit-app --namespace industrie-4-0 --timeout=5m
+          kubectl rollout status deployment/mlflow --namespace industrie-4-0 --timeout=5m

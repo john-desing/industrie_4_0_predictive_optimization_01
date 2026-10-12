@@ -11,6 +11,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copier tous les fichiers du projet dans le répertoire de travail
 COPY . .
 
+# The trained model files are intentionally not versioned. Create a deterministic
+# demo model only when a locally trained model is not available in the build context.
+RUN mkdir -p /app/data /app/models /app/reports && python src/bootstrap_model.py
+
 # Exposer le port Streamlit
 EXPOSE 8501
 

@@ -20,8 +20,8 @@ Ce projet démontre l'application de l'Intelligence Artificielle (IA), du Machin
 5.  [Préparation de l'Environnement](#5-préparation-de-lenvironnement)
 6.  [Démonstration du Savoir-Faire](#6-démonstration-du-savoir-faire)
 7.  [Tests en Laboratoire](#7-tests-en-laboratoire)
-8.  [Améliorations Futures](#8-améliorations-futures)
-9.  [Licence](#9-licence)
+8.  [Déploiement CI/CD sur GKE](#8-déploiement-cicd-sur-gke)
+9.  [Améliorations Futures](#9-améliorations-futures)
 
 ## 1. Introduction
 
@@ -206,4 +206,25 @@ Le projet est désormais entièrement **conteneurisé et persistant**, ce qui fa
 * **Tests d'Évolutivité :** Bien que non implémenté ici, l'architecture par microservices prépare le terrain pour une évolutivité future (ex: faire tourner le processeur de flux sur un autre service, ajouter plus de Workers si le traitement était intensif).
 * **Tests de Robustesse :** Introduisez des données manquantes ou des formats incorrects (en modifiant le simulateur) pour voir comment le pipeline de prétraitement et les modèles réagissent.
 
-## 8. Améliorations Futures
+## 8. Déploiement CI/CD sur GKE
+
+Le dépôt comprend une CI GitHub Actions, des manifestes Kubernetes et une configuration Terraform pour Google Kubernetes Engine (GKE Autopilot) et Artifact Registry.
+
+### Préparation Google Cloud et GitHub
+
+1. Créez un bucket Cloud Storage privé pour l'état Terraform, activez le versionnement et conservez le nom du bucket.
+2. Configurez Workload Identity Federation pour GitHub Actions, restreinte au dépôt `john-desing/industrie_4_0_predictive_optimization_01`. Associez le fournisseur à un compte de service Google Cloud.
+3. Accordez à ce compte les rôles nécessaires à la création du cluster et du registre (`roles/container.admin`, `roles/artifactregistry.admin`, `roles/serviceusage.serviceUsageAdmin`, `roles/compute.networkAdmin` et `roles/iam.serviceAccountUser`). Pour le déploiement, il doit aussi pouvoir administrer les ressources du cluster.
+4. Dans les paramètres GitHub du dépôt, définissez les variables `GCP_PROJECT_ID`, `GCP_REGION` (par défaut `europe-west1`), `GKE_CLUSTER_NAME` (par défaut `industrie-4-0`), `GCP_ARTIFACT_REGISTRY_REPOSITORY` (par défaut `industrie-4-0`) et `TF_STATE_BUCKET`.
+5. Définissez les secrets `GCP_WORKLOAD_IDENTITY_PROVIDER` (nom de ressource complet du fournisseur WIF) et `GCP_SERVICE_ACCOUNT` (adresse e-mail du compte de service).
+
+### Provisionner et déployer
+
+1. Dans **Actions → Terraform GKE → Run workflow**, lancez le workflow sans cocher `apply` pour examiner le plan. Relancez-le en cochant `apply` pour créer le registre et le cluster.
+2. Les pull requests vers `master` valident la syntaxe Python et construisent les deux images sans les publier.
+3. Chaque push sur `master` publie les images horodatées par SHA dans Artifact Registry, applique les manifestes de `k8s/` et attend le déploiement sur GKE.
+4. Récupérez l'adresse IP publique de l'application avec `kubectl get service streamlit-app -n industrie-4-0`. MLflow reste accessible uniquement à l'intérieur du cluster.
+
+Les fichiers SQLite de l'application et les données MLflow utilisent des volumes persistants GKE. Les modèles entraînés ne sont pas versionnés : l'image crée un modèle de démonstration reproductible uniquement lorsqu'aucun modèle entraîné n'est présent dans le contexte de construction. Pour la production, protégez le service public par une authentification et remplacez les données de démonstration par des artefacts de modèle gérés.
+
+## 9. Améliorations Futures

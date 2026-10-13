@@ -1,161 +1,206 @@
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
-from sklearn.preprocessing import StandardScaler
-import joblib
-import mlflow
-import mlflow.sklearn
 import os
 import sys
 
-# Ajouter le répertoire parent au chemin pour l'importation du module database_manager
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from src.database_manager import fetch_sensor_data, insert_maintenance_prediction, create_tables
+import mlflow
+import mlflow.sklearn
+import pandas as pd
+from mlflow.tracking import MlflowClient
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
-# --- MLflow Configuration ---
-mlflow.set_tracking_uri("http://localhost:5000")
-mlflow.set_experiment("Predictive Maintenance - Industrie 4.0")
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.database_manager import (  # noqa: E402
+    create_tables,
+    fetch_sensor_data,
+    insert_maintenance_prediction,
+)
+
+
+MODEL_NAME = "RandomForestPredictiveMaintenance"
+EXPERIMENT_NAME = "Predictive Maintenance - Industrie 4.0"
+FEATURE_COLUMNS = [
+    "temperature_motor",
+    "vibration_motor",
+    "pressure_oil",
+    "temp_motor_lag1",
+    "vib_motor_lag1",
+]
+class ModelNotFoundError(RuntimeError):
+    """Raised when the MLflow registry has no version for the requested model."""
+
+
+def build_maintenance_features(data, previous_reading=None):
+    """Build lag features from actual sensor observations in timestamp order."""
+    current = data.copy().sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+    current["_is_current_reading"] = True
+
+    if previous_reading is not None:
+        previous = pd.DataFrame([previous_reading])
+        previous["_is_current_reading"] = False
+        combined = pd.concat([previous, current], ignore_index=True, sort=False)
+        combined = combined.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+    else:
+        combined = current
+
+    combined["temp_motor_lag1"] = combined["temperature_motor"].shift(1)
+    combined["vib_motor_lag1"] = combined["vibration_motor"].shift(1)
+    features = combined.loc[
+        combined["_is_current_reading"] & combined["temp_motor_lag1"].notna()
+    ].copy()
+    return features.drop(columns="_is_current_reading").reset_index(drop=True)
+
 
 def load_and_preprocess_data():
-    """
-    Charge les données des capteurs depuis la DB et les prétraite pour la maintenance prédictive.
-    """
+    """Load sensor readings, label them, and create chronological lag features."""
     create_tables()
-    df = fetch_sensor_data()
-    if df.empty:
-        print("Aucune donnée de capteur trouvée dans la base de données. Veuillez exécuter data_simulator.py en premier.")
-        sys.exit(1)
+    sensor_data = fetch_sensor_data()
+    if sensor_data.empty:
+        raise RuntimeError(
+            "Aucune donnée de capteur trouvée. Générez des données avant l'entraînement."
+        )
 
-    df_maintenance = df[['id', 'timestamp', 'temperature_motor', 'vibration_motor', 'pressure_oil']].copy()
+    sensor_data["failure"] = (
+        (sensor_data["temperature_motor"] > 90)
+        | (sensor_data["vibration_motor"] > 3.5)
+        | (sensor_data["pressure_oil"] < 2.0)
+    ).astype(int)
+    maintenance_data = build_maintenance_features(sensor_data)
+    features = maintenance_data[FEATURE_COLUMNS]
+    labels = maintenance_data["failure"]
+    row_info = maintenance_data[["id", "timestamp"]]
+    return features, labels, row_info
 
-    # Étiquetage simplifié
-    df_maintenance['failure'] = ((df_maintenance['temperature_motor'] > 90) |
-                                 (df_maintenance['vibration_motor'] > 3.5) |
-                                 (df_maintenance['pressure_oil'] < 2.0)).astype(int)
 
-    # Trier par timestamp
-    df_maintenance = df_maintenance.sort_values('timestamp').reset_index(drop=True)
-    df_maintenance['temp_motor_lag1'] = df_maintenance['temperature_motor'].shift(1)
-    df_maintenance['vib_motor_lag1'] = df_maintenance['vibration_motor'].shift(1)
-    df_maintenance.dropna(inplace=True)
+def train_predictive_model(
+    features,
+    labels,
+    n_estimators=100,
+    max_depth=None,
+    model_name=MODEL_NAME,
+):
+    """Fit preprocessing on the chronological training split and register the pipeline."""
+    if len(features) < 5:
+        raise ValueError("Au moins cinq observations valides sont nécessaires.")
 
-    X = df_maintenance[['temperature_motor', 'vibration_motor', 'pressure_oil', 'temp_motor_lag1', 'vib_motor_lag1']]
-    y = df_maintenance['failure']
+    features = features.loc[:, FEATURE_COLUMNS].reset_index(drop=True)
+    labels = pd.Series(labels).reset_index(drop=True)
+    split_index = int(len(features) * 0.7)
+    if split_index < 2 or split_index >= len(features):
+        raise ValueError("Les jeux d'entraînement et de test doivent être non vides.")
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_train, X_test = features.iloc[:split_index], features.iloc[split_index:]
+    y_train, y_test = labels.iloc[:split_index], labels.iloc[split_index:]
+    model = Pipeline(
+        steps=[
+            ("scaler", StandardScaler()),
+            (
+                "classifier",
+                RandomForestClassifier(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    random_state=42,
+                    class_weight="balanced",
+                ),
+            ),
+        ]
+    )
 
-    return X_scaled, y, scaler, df_maintenance[['id', 'timestamp']]
-
-def train_predictive_model(X, y, n_estimators=100, max_depth=None):
-    """
-    Entraîne un modèle de classification pour la maintenance prédictive
-    et logue l'expérimentation avec MLflow.
-    """
+    mlflow.set_experiment(EXPERIMENT_NAME)
     with mlflow.start_run() as run:
         mlflow.log_param("n_estimators", n_estimators)
         mlflow.log_param("max_depth", max_depth)
-        
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
-        
-        model = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42, class_weight='balanced')
+        mlflow.log_param("train_size", len(X_train))
+        mlflow.log_param("test_size", len(X_test))
         model.fit(X_train, y_train)
-        
-        y_pred = model.predict(X_test)
+        predictions = model.predict(X_test)
 
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred, zero_division=0)
-        recall = recall_score(y_test, y_pred, zero_division=0)
-        f1 = f1_score(y_test, y_pred, zero_division=0)
-
-        mlflow.log_metric("accuracy", accuracy)
-        mlflow.log_metric("precision", precision)
-        mlflow.log_metric("recall", recall)
-        mlflow.log_metric("f1_score", f1)
-
-        print("\n--- Rapport de Classification ---")
-        print(classification_report(y_test, y_pred, zero_division=0))
-        print("\n--- Matrice de Confusion ---")
-        print(confusion_matrix(y_test, y_pred))
-
+        metrics = {
+            "accuracy": accuracy_score(y_test, predictions),
+            "precision": precision_score(y_test, predictions, zero_division=0),
+            "recall": recall_score(y_test, predictions, zero_division=0),
+            "f1_score": f1_score(y_test, predictions, zero_division=0),
+        }
+        mlflow.log_metrics(metrics)
         mlflow.sklearn.log_model(
             sk_model=model,
             artifact_path="predictive_maintenance_model",
-            registered_model_name="RandomForestPredictiveMaintenance"
+            registered_model_name=model_name,
+            input_example=X_train.head(5),
         )
-        print(f"Modèle loggé dans MLflow avec Run ID: {run.info.run_id}")
-        
-        return model
 
-def make_prediction_and_store(model, scaler, data_to_predict_df):
-    """
-    Fait des prédictions sur de nouvelles données et les stocke dans la base de données.
-    """
-    if data_to_predict_df.empty:
-        print("Aucune donnée à prédire.")
-        return
+        print("\n--- Rapport de Classification ---")
+        print(classification_report(y_test, predictions, zero_division=0))
+        print("\n--- Matrice de Confusion ---")
+        print(confusion_matrix(y_test, predictions))
+        print(f"Modèle enregistré dans MLflow. Run ID: {run.info.run_id}")
 
-    data_to_predict_df = data_to_predict_df.sort_values('timestamp').reset_index(drop=True)
-    data_to_predict_df['temp_motor_lag1'] = data_to_predict_df['temperature_motor'].shift(1)
-    data_to_predict_df['vib_motor_lag1'] = data_to_predict_df['vibration_motor'].shift(1)
-    data_to_predict_df.dropna(inplace=True)
+    return model
 
-    features = data_to_predict_df[['temperature_motor', 'vibration_motor', 'pressure_oil', 'temp_motor_lag1', 'vib_motor_lag1']]
-    features_scaled = scaler.transform(features)
 
-    prediction = model.predict(features_scaled)
-    probability = model.predict_proba(features_scaled)[:, 1]
-
-    for idx, row in data_to_predict_df.iterrows():
-        insert_maintenance_prediction(
-            reading_id=row['id'],
-            timestamp=row['timestamp'],
-            prediction=int(prediction[data_to_predict_df.index.get_loc(idx)]),
-            probability=float(probability[data_to_predict_df.index.get_loc(idx)])
+def load_latest_registered_model(model_name=MODEL_NAME):
+    """Load the newest registered sklearn pipeline, including its fitted scaler."""
+    client = MlflowClient()
+    versions = client.search_model_versions(f"name='{model_name}'")
+    if not versions:
+        raise ModelNotFoundError(
+            f"Aucune version du modèle '{model_name}' n'est enregistrée dans MLflow."
         )
-    print(f"{len(data_to_predict_df)} prédictions enregistrées dans la base de données.")
 
-# --------------------------------------------------
-# 🔁 Fonctions utiles pour app.py (ajouts)
-# --------------------------------------------------
+    latest_version = max(versions, key=lambda version: int(version.version))
+    model_uri = f"models:/{model_name}/{latest_version.version}"
+    return mlflow.sklearn.load_model(model_uri)
 
-def preprocess_maintenance_data(df_raw, scaler):
-    """
-    Prétraite de nouvelles données pour la prédiction.
-    """
-    df_raw = df_raw.sort_values('timestamp').reset_index(drop=True)
-    df_raw['temp_motor_lag1'] = df_raw['temperature_motor'].shift(1)
-    df_raw['vib_motor_lag1'] = df_raw['vibration_motor'].shift(1)
-    df_raw.dropna(inplace=True)
 
-    features = df_raw[['temperature_motor', 'vibration_motor', 'pressure_oil', 'temp_motor_lag1', 'vib_motor_lag1']]
-    features_scaled = scaler.transform(features)
-    return df_raw, features_scaled
-
-def make_prediction(model, scaled_features):
-    """
-    Retourne la prédiction et les probabilités.
-    """
-    predictions = model.predict(scaled_features)
-    probabilities = model.predict_proba(scaled_features)[:, 1]
+def make_prediction(model, features):
+    """Return binary predictions and class-1 probabilities for engineered features."""
+    model_features = features.loc[:, FEATURE_COLUMNS]
+    predictions = model.predict(model_features).astype(int)
+    classifier = model.named_steps["classifier"]
+    classes = list(classifier.classes_)
+    if 1 in classes:
+        probabilities = model.predict_proba(model_features)[:, classes.index(1)]
+    else:
+        probabilities = [0.0] * len(predictions)
     return predictions, probabilities
 
-# --------------------------------------------------
-# 🚀 Lancement du pipeline
-# --------------------------------------------------
-if __name__ == "__main__":
-    X, y, scaler, original_data_info = load_and_preprocess_data()
-    
-    model = train_predictive_model(X, y, n_estimators=120, max_depth=10)
 
-    os.makedirs("models", exist_ok=True)
-    joblib.dump(model, 'models/predictive_maintenance_model.pkl')
-    joblib.dump(scaler, 'models/predictive_maintenance_scaler.pkl')
-    print("Modèle et scaler sauvegardés localement dans le dossier 'models/'.")
+def make_prediction_and_store(model, data_to_predict_df, previous_reading=None):
+    """Predict and persist rows with lag values taken from observed sensor readings."""
+    features = build_maintenance_features(
+        data_to_predict_df, previous_reading=previous_reading
+    )
+    if features.empty:
+        print("Aucune observation avec un relevé précédent réel à prédire.")
+        return
+
+    predictions, probabilities = make_prediction(model, features)
+    for index, row in features.iterrows():
+        insert_maintenance_prediction(
+            reading_id=row["id"],
+            timestamp=row["timestamp"],
+            prediction=int(predictions[index]),
+            probability=float(probabilities[index]),
+        )
+    print(f"{len(features)} prédictions enregistrées dans la base de données.")
+
+
+if __name__ == "__main__":
+    features, labels, _ = load_and_preprocess_data()
+    model = train_predictive_model(
+        features, labels, n_estimators=120, max_depth=10
+    )
 
     latest_sensor_data = fetch_sensor_data(limit=100)
     if not latest_sensor_data.empty:
-        make_prediction_and_store(model, scaler, latest_sensor_data)
+        make_prediction_and_store(model, latest_sensor_data)
     else:
         print("Pas de nouvelles données pour prédire.")

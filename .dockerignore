@@ -6,6 +6,7 @@ __pycache__
 *.py[cod]
 .ipynb_checkpoints
 mlruns
+models/*.pkl
 data/*.db
 reports
 notebooks

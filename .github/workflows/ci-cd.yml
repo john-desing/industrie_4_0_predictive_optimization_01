@@ -43,8 +43,19 @@ jobs:
       - name: Configure Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Validate Python syntax
         run: python -m compileall -q app.py src
+
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run functional tests
+        run: python -m unittest discover -s tests -v
 
       - name: Build Streamlit image
         uses: docker/build-push-action@v6
@@ -52,7 +63,7 @@ jobs:
           context: .
           file: Dockerfile
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/industrie-4-0-app:${{ github.sha }}
+          tags: ${{ github.event_name == 'push' && format('{0}-docker.pkg.dev/{1}/{2}/industrie-4-0-app:{3}', env.REGION, env.PROJECT_ID, env.REPOSITORY, github.sha) || format('industrie-4-0-app:{0}', github.sha) }}
 
       - name: Build MLflow image
         uses: docker/build-push-action@v6
@@ -60,7 +71,7 @@ jobs:
           context: .
           file: Dockerfile_mlflow
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/industrie-4-0-mlflow:${{ github.sha }}
+          tags: ${{ github.event_name == 'push' && format('{0}-docker.pkg.dev/{1}/{2}/industrie-4-0-mlflow:{3}', env.REGION, env.PROJECT_ID, env.REPOSITORY, github.sha) || format('industrie-4-0-mlflow:{0}', github.sha) }}
 
       - name: Deploy to GKE
         if: github.event_name == 'push'

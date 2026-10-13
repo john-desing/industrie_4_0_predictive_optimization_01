@@ -9,14 +9,24 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./mlruns:/mlruns # Persister les données de tracking et modèles
-      - ./models:/app/models # Assurez-vous que le dossier models est accessible
-      - ./data:/app/data # Assurez-vous que le dossier data est accessible (pour la DB)
-    environment:
-      # Configure MLflow pour utiliser un backend de fichiers persisté
-      - MLFLOW_TRACKING_URI=file:///mlruns
-      - MLFLOW_TRACKING_SERVER_HOST=0.0.0.0 # Exposer le serveur sur toutes les interfaces
-    command: mlflow ui --host 0.0.0.0 --port 5000 --backend-store-uri file:///mlruns
+      - ./mlruns:/mlruns
+      - mlflow_artifacts:/mlartifacts
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlruns/mlflow.db
+      --default-artifact-root mlflow-artifacts:/
+      --serve-artifacts
+      --artifacts-destination /mlartifacts
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
 
   # Service de l'application Streamlit
   streamlit_app:
@@ -27,15 +37,13 @@ services:
       - "8501:8501"
     volumes:
       - ./data:/app/data # Pour accéder à la base de données SQLite
-      - ./models:/app/models # Pour charger le scaler et le modèle localement (si pas via MLflow pyfunc)
       - ./src:/app/src # Pour que l'application puisse importer nos modules
-      - ./mlruns:/app/mlruns # Si Streamlit doit interagir directement avec les logs MLflow
+      - ./reports:/app/reports
     depends_on:
-      - mlflow_server # S'assure que MLflow est démarré avant Streamlit
-    # Assurez-vous que Streamlit est configuré pour accéder à la DB et potentiellement MLflow
+      mlflow_server:
+        condition: service_healthy
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow_server:5000 # Pour que les scripts Python à l'intérieur du conteneur se connectent à MLflow
-    version: '3.8'
 
   # service Grafana
   grafana:
@@ -62,3 +70,4 @@ services:
 # Ajout d'un volume nommé pour la persistance des données de Grafana
 volumes:
   grafana_data:
+  mlflow_artifacts:

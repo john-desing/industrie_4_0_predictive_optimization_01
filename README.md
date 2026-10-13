@@ -120,10 +120,10 @@ Une application web construite avec Streamlit, offrant une interface utilisateur
 ### 4.9. Orchestration avec Docker Compose (`Dockerfile`, `Dockerfile_mlflow`, `docker-compose.yml`)
 
 * **`Dockerfile` (pour Streamlit) :** Définit l'environnement et les dépendances nécessaires pour l'application Streamlit.
-* **`Dockerfile_mlflow` (pour MLflow Server) :** Définit l'environnement pour le serveur MLflow Tracking.
+* **`Dockerfile_mlflow` (pour MLflow Server) :** Définit l'environnement du serveur MLflow Tracking avec un backend SQLite (SQL), persistant dans `/mlruns`, et un stockage d'artefacts persistant dans `/mlartifacts`. `--serve-artifacts` sert les artefacts par le serveur MLflow afin que les clients n'aient pas besoin de monter le disque du serveur.
 * **`docker-compose.yml` :** Orchestre le démarrage de deux services conteneurisés :
-    * `mlflow_server` : Le serveur MLflow, persistant ses données de tracking et ses modèles.
-    * `streamlit_app` : L'application Streamlit, ayant accès aux données (DB) et aux modèles, et dépendant du serveur MLflow.
+    * `mlflow_server` : Le serveur MLflow, avec backend SQL et artefacts persistants/proxyfiés.
+    * `streamlit_app` : L'application Streamlit, qui récupère son modèle et son prétraitement depuis le registre MLflow via `MLFLOW_TRACKING_URI`.
 Grafana : Outil de visualisation et de surveillance open-source, parfait pour des tableaux de bord dynamiques en temps réel et des alertes sophistiquées.
 Jumeau Numérique (Digital Twin - simplifiée) : Une représentation fonctionnelle de la machine permettant de simuler des scénarios "what-if" basés sur les modèles ML déployés.
 
@@ -147,7 +147,7 @@ Pour exécuter l'ensemble du projet et observer la démonstration :
 
 2.  **Démarrer l'ensemble de l'écosystème avec Docker Compose :**
     ```bash
-    docker-compose up --build -d
+    docker compose up --build -d
     ```
     * `--build` force la reconstruction des images Docker.
     * `-d` exécute les conteneurs en arrière-plan.
@@ -162,14 +162,12 @@ Pour exécuter l'ensemble du projet et observer la démonstration :
     * Dans l'application **Streamlit** (http://localhost:8501) :
         * Dans la **barre latérale**, cliquez sur "Initialiser / Vider la Base de Données".
         * Cliquez ensuite sur "Générer et stocker de nouvelles données" pour remplir la base de données initiale.
-    * **Exécuter l'entraînement du modèle ML (nécessaire une seule fois) :**
-        Dans votre terminal local (hors Docker), assurez-vous d'être dans l'environnement virtuel et exécutez :
+    * Au premier démarrage, un modèle de démonstration déterministe est entraîné et inscrit au registre si celui-ci ne contient pas encore de modèle.
+    * Pour enregistrer un modèle entraîné à partir des relevés réels de la base de données :
         ```bash
-        python src/predictive_maintenance.py
+        docker compose exec streamlit_app python src/predictive_maintenance.py
         ```
-        * Ceci entraînera le modèle et le loguera dans MLflow.
-        * Allez dans l'interface MLflow (http://localhost:5000), naviguez vers le modèle `RandomForestPredictiveMaintenance` dans le **Model Registry**.
-        * Cliquez sur la dernière version de votre modèle et changez son stage en **"Production"**. C'est crucial pour que les simulateurs de flux puissent le charger.
+        Le scaler et le modèle sont enregistrés ensemble comme pipeline MLflow. Streamlit et le processeur de flux chargent la dernière version directement depuis le registre ; aucun fichier Joblib local ni stage « Production » manuel n'est requis.
 
 5.  **Observer la simulation et les résultats :**
     * Dans l'application **Streamlit** (http://localhost:8501) :
@@ -191,7 +189,7 @@ Pour exécuter l'ensemble du projet et observer la démonstration :
 
 7.  **Arrêter les services Docker :**
     ```bash
-    docker-compose down
+    docker compose down
     ```
 
 ## 7. Tests en Laboratoire
@@ -225,6 +223,6 @@ Le dépôt comprend une CI GitHub Actions, des manifestes Kubernetes et une conf
 3. Chaque push sur `master` publie les images horodatées par SHA dans Artifact Registry, applique les manifestes de `k8s/` et attend le déploiement sur GKE.
 4. Récupérez l'adresse IP publique de l'application avec `kubectl get service streamlit-app -n industrie-4-0`. MLflow reste accessible uniquement à l'intérieur du cluster.
 
-Les fichiers SQLite de l'application et les données MLflow utilisent des volumes persistants GKE. Les modèles entraînés ne sont pas versionnés : l'image crée un modèle de démonstration reproductible uniquement lorsqu'aucun modèle entraîné n'est présent dans le contexte de construction. Pour la production, protégez le service public par une authentification et remplacez les données de démonstration par des artefacts de modèle gérés.
+Les fichiers SQLite de l'application, la base SQL de MLflow et les artefacts MLflow utilisent des volumes persistants GKE. MLflow sert les artefacts aux clients via son API ; le modèle, son scaler et les prédictions passent donc tous par le registre. Le modèle de démonstration est créé au premier démarrage uniquement si le registre est vide. Le backend SQLite MLflow convient à ce déploiement mono-instance ; pour une haute disponibilité, utilisez PostgreSQL et un stockage d'artefacts objet partagé.
 
 ## 9. Améliorations Futures

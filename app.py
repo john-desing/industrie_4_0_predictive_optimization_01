@@ -3,11 +3,11 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import joblib
 import os
 import sys
 import time
 import datetime
+import sqlite3
 import plotly.graph_objects as go
 
 
@@ -18,8 +18,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 # Importer les fonctions nécessaires de nos modules
 from data_simulator import generate_sensor_data_df
-# from predictive_maintenance import  make_prediction
 from quality_control import analyze_quality_data 
+from src.predictive_maintenance import (
+    build_maintenance_features,
+    load_latest_registered_model,
+    make_prediction,
+)
 
 # Importer les modules de DB et d'alertes, y compris les nouvelles fonctions de config
 from database_manager import create_tables, fetch_sensor_data, insert_sensor_data, \
@@ -59,20 +63,12 @@ def get_current_config():
     return get_all_config_values()
 
 @st.cache_resource
-def load_models_and_scaler():
-    """
-    Charge le modèle de maintenance prédictive et le scaler localement.
-    """
-    try:
-        model = joblib.load('models/predictive_maintenance_model.pkl')
-        scaler = joblib.load('models/predictive_maintenance_scaler.pkl')
-        return model, scaler
-    except FileNotFoundError:
-        st.error("Erreur: Modèle ou scaler non trouvé. Assurez-vous d'avoir exécuté `src/predictive_maintenance.py` pour entraîner et sauvegarder le modèle.")
-        st.stop()
+def load_maintenance_model():
+    """Charge le modèle et son prétraitement depuis le registre MLflow."""
+    return load_latest_registered_model()
 
-# Charger les modèles et le scaler au démarrage de l'application
-model_maintenance, scaler_maintenance = load_models_and_scaler()
+
+model_maintenance = load_maintenance_model()
 
 # Assurez-vous que la base de données et les tables existent, et que les seuils par défaut sont là
 create_tables()
@@ -448,6 +444,12 @@ elif page == "Simulation en Direct":
                 current_timestamp = datetime.datetime.now()
                 single_record_df = generate_sensor_data_df(num_records=1, start_date=current_timestamp, introduce_drift=True)
                 single_record_dict = single_record_df.iloc[0].to_dict()
+                previous_sensor_data = fetch_sensor_data(limit=1)
+                if previous_sensor_data.empty:
+                    st.error("Générez des données capteur avant de démarrer la simulation.")
+                    st.session_state['running_stream'] = False
+                    st.stop()
+                previous_reading = previous_sensor_data.iloc[0].to_dict()
                 
                 insert_sensor_data(single_record_df)
                 
@@ -457,17 +459,14 @@ elif page == "Simulation en Direct":
                 reading_id = cursor.fetchone()[0]
                 conn.close()
 
-                temp_motor_lag1_val = single_record_dict['temperature_motor'] * 0.98
-                vib_motor_lag1_val = single_record_dict['vibration_motor'] * 0.95
-                features_for_prediction = pd.DataFrame([[
-                    single_record_dict['temperature_motor'],
-                    single_record_dict['vibration_motor'],
-                    single_record_dict['pressure_oil'],
-                    temp_motor_lag1_val,
-                    vib_motor_lag1_val
-                ]], columns=['temperature_motor', 'vibration_motor', 'pressure_oil', 'temp_motor_lag1', 'vib_motor_lag1'])
-
-                prediction_maintenance, probability_maintenance = make_prediction(model_maintenance, scaler_maintenance, features_for_prediction)
+                features_for_prediction = build_maintenance_features(
+                    single_record_df, previous_reading=previous_reading
+                )
+                predictions, probabilities = make_prediction(
+                    model_maintenance, features_for_prediction
+                )
+                prediction_maintenance = int(predictions[0])
+                probability_maintenance = float(probabilities[0])
                 insert_maintenance_prediction(
                     reading_id=reading_id,
                     timestamp=single_record_dict['timestamp'],
